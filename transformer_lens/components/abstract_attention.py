@@ -297,17 +297,19 @@ class AbstractAttention(ABC, nn.Module):
                     )
                 )
             else:
+                # Add singleton dimensions to make shapes compatible for broadcasting:
                 w = einops.rearrange(
                     self.W_O,
-                    "head_index d_head d_model -> d_model head_index d_head",
+                    "head_index d_head d_model -> 1 1 head_index d_head d_model",
                 )
-                result = self.hook_result(
-                    einops.einsum(
-                        z,
-                        w,
-                        "... head_index d_head, d_model head_index d_head -> ... head_index d_model",
-                    )
-                )  # [batch, pos, head_index, d_model]
+                z = einops.rearrange(
+                    z, "batch pos head_index d_head -> batch pos head_index d_head 1"
+                )
+
+                # Multiply the z tensor by the W_O tensor, summing over the d_head dimension
+                unhooked_result = (z * w).sum(-2)
+
+                result = self.hook_result(unhooked_result)  # [batch, pos, head_index, d_model]
             out = (
                 einops.reduce(result, "batch position index model->batch position model", "sum")
                 + self.b_O
@@ -690,7 +692,11 @@ class AbstractAttention(ABC, nn.Module):
             n_heads, device
         )
 
-        # The ALiBi bias is then m * slope_matrix
-        alibi_bias = torch.einsum("ij,k->kij", slope, multipliers)
+        # Add singleton dimensions to make shapes compatible for broadcasting:
+        slope = einops.rearrange(slope, "query key -> 1 query key")
+        multipliers = einops.rearrange(multipliers, "head_idx -> head_idx 1 1")
+
+        # Element-wise multiplication of the slope and multipliers
+        alibi_bias = multipliers * slope
 
         return alibi_bias
